@@ -8,8 +8,8 @@ import base64
 
 
 app = Flask(__name__)
-db_name = "project1.db"
-sql_file = "project1.sql"
+db_name = "project2.db"
+sql_file = "project2.sql"
 db_flag = False
 
 def create_db():
@@ -59,8 +59,49 @@ def valid_pass(password, first_name, last_name, username):
 				return False
 			
 		return check
-			
+	
+def generate_jwt(username):
+	with open('key.txt', 'r') as file:
+		key = file.read().strip()
 
+	header = {"alg": "HS256","typ": "JWT"}
+	payload = {"username": username}
+	
+	header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode('utf-8')).decode('utf-8')
+	payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode('utf-8')).decode('utf-8')
+    
+   # Create the message to sign
+	message = f"{header_encoded}.{payload_encoded}"
+	signature = hmac.new(key.encode('utf-8'),message.encode('utf-8'),hashlib.sha256).hexdigest()
+	jwt_token = f"{message}.{signature}"
+	
+	return jwt_token
+
+def verify_jwt(token):
+	try:
+		parts = token.split(".")
+		if len(parts) !=3:
+			return None
+		
+		header, payload, signature = parts
+		with open('key.txt', 'r') as file:
+			key = file.read().strip()
+
+		message = f"{header}.{payload}"
+		expected_signature = hmac.new(key.encode('utf-8'),message.encode('utf-8'),hashlib.sha256).hexdigest()
+		
+		if signature != expected_signature:
+			return None
+		
+		decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
+		final = json.loads(decoded_payload)
+		
+        
+		return final.get('username')
+	
+	except:
+		return None
+				
 @app.route('/create_user', methods=['POST'])      
 def create_user():
 	conn = get_db()
@@ -100,88 +141,21 @@ def create_user():
 
 @app.route('/clear', methods=['GET'])
 def clear():
-	conn = get_db()
-	cursor = conn.cursor()
-	cursor.execute("DELETE FROM users")
-	cursor.execute("DELETE FROM prev_passwords")  
-	conn.commit()
-	conn.close()
-	return json.dumps({"status": 1})
-	
-def generate_jwt(username):
-	with open('key.txt', 'r') as file:
-		key = file.read().strip()
-
-	header = {"alg": "HS256","typ": "JWT"}
-	payload = {"username": username,"access": "True"}
-	
-	header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode('utf-8')).decode('utf-8')
-	payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode('utf-8')).decode('utf-8')
-    
-   # Create the message to sign
-	message = f"{header_encoded}.{payload_encoded}"
-	signature = hmac.new(key.encode('utf-8'),message.encode('utf-8'),hashlib.sha256).hexdigest()
-	jwt_token = f"{message}.{signature}"
-	
-	return jwt_token
-
-def verify_jwt(token):
 	try:
-		parts = token.split(".")
-		if len(parts) !=3:
-			return None
-		
-		header, payload, signature = parts
-		with open('key.txt', 'r') as file:
-			key = file.read().strip()
-
-		message = f"{header}.{payload}"
-		expected_signature = hmac.new(key.encode('utf-8'),message.encode('utf-8'),hashlib.sha256).hexdigest()
-		
-		if signature != expected_signature:
-			return None
-		
-		decoded_payload = base64.urlsafe_b64decode(payload).decode('utf-8')
-		final = json.loads(decoded_payload)
-		if final.get('access') != 'True':
-			return None
+        # Close any existing connections first
+        if os.path.exists(db_name):
+            os.remove(db_name)
         
-		return final.get('username')
-	
-	except:
-		return None
-	
-@app.route('/view', methods=['POST'])
-def view():
-	conn = get_db()
-	cursor = conn.cursor()
-
-	jwt = request.form.get('jwt')
-
-	username = verify_jwt(jwt)
-	if not username:
-		return json.dumps({"status": 2, "data": "NULL"})
-	
-	#get user data
-	cursor.execute("SELECT username, email_address, first_name, last_name FROM users WHERE username=?", (username,))
-	user = cursor.fetchone()
-	
-	if not user:
-		conn.close()
-		return json.dumps({"status": 2, "data": "NULL"})
-	
-	username, email_address, first_name, last_name = user
-
-	# return user data
-	data = {
-		"username": username,
-		"email_address": email_address,
-		"first_name": first_name,
-		"last_name": last_name
-	}
-
-	conn.close()
-	return json.dumps({"status": 1, "data": data})
+        # Reset the flag so DB gets recreated
+        global db_flag
+        db_flag = False
+        
+        # Recreate fresh database
+        create_db()
+        
+        return json.dumps({"status": 1})
+    except Exception as e:
+        return json.dumps({"status": 2})
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -209,76 +183,45 @@ def login():
 	conn.close()
 	return json.dumps({"status": 1, "jwt": jwt_token})		
 
-@app.route('/update', methods=['POST'])
-def update():
+@app.route('/follow', methods=['POST'])
+def follow():
 	conn = get_db()
 	cursor = conn.cursor()
 
-	jwt = request.form.get('jwt')
-	verified_username = verify_jwt(jwt)
-	if not verified_username:
-		return json.dumps({"status": 3})
-	
-	username = request.form.get('username')
-	new_username = request.form.get('new_username')
-	password = request.form.get('password')
-	new_password = request.form.get('new_password')
-	
-	if username and new_username:
-		#if username did not exist
-		if username != verified_username:
-			conn.close()
-			return json.dumps({"status":2})
-		
-		cursor.execute('SELECT username FROM users WHERE username=?', (new_username,))  #if username found -> not unique
-		if cursor.fetchone():
-			conn.close()
-			return json.dumps({"status":2})
-		
-		cursor.execute("UPDATE users SET username=? WHERE username=?", (new_username, username))
-		conn.commit()
-		conn.close()
-		return json.dumps({"status": 1})
-	
-	elif password and new_password:
-		cursor.execute("SELECT password_hash, salt, first_name, last_name FROM users WHERE username=?", (verified_username,))
-		user = cursor.fetchone()
-		if not user:
-			conn.close()
-			return json.dumps({"status": 2, "jwt": "NULL"})
-	
-		password_hash, salt, first_name, last_name = user
-		current = hash_pass(password, salt)
-
-		if current != password_hash:
-			conn.close()
-			return json.dumps({"status":2})
-		
-		if not valid_pass(new_password, first_name, last_name, verified_username):
-			conn.close()
-			return json.dumps({"status": 2})
-
-		new_hash = hash_pass(new_password, salt)
-
-		cursor.execute("SELECT password_hash FROM prev_passwords WHERE username=?", (verified_username,))
-		olds = cursor.fetchall()
-		for (old,) in olds:
-			if old == new_hash:
-				conn.close()
-				return json.dumps({"status":2})
-		
-		if new_hash == password_hash:
-			conn.close()
-			return json.dumps({"status": 2})
-	
-		cursor.execute("INSERT INTO prev_passwords VALUES (?, ?)", (verified_username, password_hash))
-		
-		cursor.execute("UPDATE users SET password_hash=? WHERE username=?", (new_hash, verified_username))
-		conn.commit()
-		conn.close()
-		return json.dumps({"status": 1})
-	else:
-		conn.close()
-		return json.dumps({"status":2})
+	jwt = request.headers.get('Authorization')
+	if not jwt:
+        conn.close()
+        return json.dumps({"status": 2})  # missing
+    
+    # verify who is making the request
+    user = verify_jwt(jwt)
+    if not user:
+        conn.close()
+        return json.dumps({"status": 2}) # invalid
 
 
+	target = request.form.get('username')
+	if not target or target == user:
+        conn.close()
+        return json.dumps({"status": 2})
+	#if already in folllow list, returns error
+	cursor.execute("SELECT follower FROM follow_list WHERE user= ? ", (target,))
+	if cursor.fetchone():
+		return json.dumps({"status": 2})
+
+	cursor.execute("SELECT * FROM follow_list WHERE user = ? AND follower = ?", (user, target))
+    if cursor.fetchone():
+        conn.close()
+        return json.dumps({"status": 2}) 
+	
+	cursor.execute("INSERT INTO follow_list (user,follower) VALUES (?, ?)", (user, target))
+    conn.commit()
+    conn.close()
+	return json.dumps({"status": 1})
+
+
+
+
+
+	
+	
